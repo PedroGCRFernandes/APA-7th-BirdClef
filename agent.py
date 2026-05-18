@@ -651,6 +651,41 @@ def _crashed(msg):
         "training_time_sec": None, "epochs_trained": 0,
     }
 
+# ── Model saving ──────────────────────────────────────────────────────────────
+
+def save_keras_clean(model, path):
+    """Save a .keras model, then strip the dead BatchNormalization `renorm*`
+    kwargs from its config. Keras 3.14 still writes those, but Kaggle's stricter
+    Keras rejects them on load — stripping here makes every saved model load on
+    Kaggle without any notebook-side shim."""
+    model.save(path)
+
+    DEAD = ("renorm", "renorm_clipping", "renorm_momentum")
+
+    def _strip(obj):
+        if isinstance(obj, dict):
+            for k in DEAD:
+                obj.pop(k, None)
+            for v in obj.values():
+                _strip(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                _strip(v)
+
+    import zipfile, json
+    with zipfile.ZipFile(path) as zin:
+        names = zin.namelist()
+        data  = {n: zin.read(n) for n in names}
+
+    cfg = json.loads(data["config.json"])
+    _strip(cfg)
+    data["config.json"] = json.dumps(cfg).encode()
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for n in names:
+            zout.writestr(n, data[n])
+
+
 # ── Run report ────────────────────────────────────────────────────────────────
 
 def generate_run_report(run_id, history):
@@ -783,14 +818,14 @@ def run_agent(backbone_model, feature_dim, train_generator, val_generator, sound
             if result["val_auc"] > best_auc:
                 best_auc = result["val_auc"]
                 # always save this run's best into its own folder
-                result["model"].save(run_dir + "best_model.keras")
+                save_keras_clean(result["model"], run_dir + "best_model.keras")
                 result["model"].save_weights(run_dir + "best_model_weights.weights.h5")
                 print(f"  New run-best val_auc={best_auc:.4f} — saved to {run_dir}")
 
                 # only overwrite the global Kaggle copy if it beats every prior run
                 if result["val_auc"] > global_best_auc:
                     global_best_auc = result["val_auc"]
-                    result["model"].save(models_dir + "best_model.keras")
+                    save_keras_clean(result["model"], models_dir + "best_model.keras")
                     result["model"].save_weights(models_dir + "best_model_weights.weights.h5")
                     print(f"  New GLOBAL best — updated models/ ({global_best_auc:.4f})")
 
