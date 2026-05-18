@@ -1,0 +1,14 @@
+# Audio data — too large for GitHub (use Kaggle datasets instead)
+data/train_audio/
+data/train_soundscapes/
+data/test_soundscapes/
+
+# Trained model files — hosted on Kaggle dataset
+models/
+runs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
