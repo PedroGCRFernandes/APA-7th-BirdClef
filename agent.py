@@ -46,7 +46,7 @@ BATCH_SIZE = 32
 N_EPOCHS   = 15
 
 # Agent
-LLM_MODEL    = "gemma4:e4b"
+LLM_MODEL    = "gemma4:e4b"  #qwen3.5:9b
 N_ITERATIONS = 10
 MAX_FIX_RETRIES = 3  # how many times the LLM can try to fix a crash before giving up
 
@@ -54,14 +54,12 @@ MAX_FIX_RETRIES = 3  # how many times the LLM can try to fix a crash before givi
 DEBUG = False
 DEBUG_SAMPLES = 64  # must be >= BATCH_SIZE
 
-# Backbone: "efficientnet" | "mobilenet" | "resnet" | "scratch"
+# Backbone: "efficientnet"
 BACKBONE  = "efficientnet"
 FINE_TUNE = True
 
 BACKBONE_CLASS_NAME = {
     "efficientnet": "EfficientNetB0",
-    "mobilenet"   : "MobileNetV2",
-    "resnet"      : "ResNet50",
     "scratch"     : "custom CNN",
 }
 
@@ -355,12 +353,15 @@ class _BestWeightsCallback(tf.keras.callbacks.Callback):
 
 
 class PlateauCallback(tf.keras.callbacks.Callback):
-    """Stops training after `patience` epochs without val_auc improving by `min_delta`."""
+    """Stops training after `patience` epochs without val_auc improving by
+    `min_rel_delta` *relative* to the current best (e.g. 0.01 = 1% relative gain).
+    Relative thresholds adapt as AUC rises: a 0.01 jump at 0.50 is easy, at 0.90 is not.
+    """
 
-    def __init__(self, patience=4, min_delta=0.005):
+    def __init__(self, patience=4, min_rel_delta=0.01):
         super().__init__()
         self.patience        = patience
-        self.min_delta       = min_delta
+        self.min_rel_delta   = min_rel_delta
         self.best_auc        = 0.0
         self.wait            = 0
         self.plateau_reached = False
@@ -369,7 +370,9 @@ class PlateauCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         self.epochs_trained = epoch + 1
         current = (logs or {}).get("val_auc", 0.0)
-        if current - self.best_auc >= self.min_delta:
+        # relative improvement; first real value (best_auc==0) always counts
+        required = self.best_auc * self.min_rel_delta if self.best_auc > 0 else 0.0
+        if current - self.best_auc > required:
             self.best_auc = current
             self.wait = 0
         else:
@@ -584,7 +587,7 @@ def execute_safely(code, backbone_model, train_generator, val_generator, soundsc
         )
 
         # ── Phase 1: train on labelled audio ───────────────────────────────
-        plateau_cb    = PlateauCallback(patience=3, min_delta=0.01)
+        plateau_cb    = PlateauCallback(patience=3, min_rel_delta=0.01)
         best_wts_cb   = _BestWeightsCallback()
         history = model.fit(
             train_generator, validation_data=val_generator,
