@@ -25,7 +25,7 @@ import tensorflow as tf
 import ollama
 from sklearn.model_selection import train_test_split
 
-from experiment_log import new_run_id, add_experiment, print_summary
+from experiment_log import new_run_id, add_experiment, print_summary, load_successful
 from prompt_builder import build_prompt
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -60,7 +60,6 @@ FINE_TUNE = True
 
 BACKBONE_CLASS_NAME = {
     "efficientnet": "EfficientNetB0",
-    "scratch"     : "custom CNN",
 }
 
 # ── Data ───────────────────────────────────────────────────────────────────────
@@ -594,31 +593,38 @@ def execute_safely(code, backbone_model, train_generator, val_generator, soundsc
             epochs=N_EPOCHS, verbose=1, callbacks=[plateau_cb, best_wts_cb]
         )
 
-        # capture Phase 1 best before Phase 2 might extend history
-        phase1_best_auc = best_wts_cb.best_auc
+        # best (auc, weights) seen so far across all phases
+        best_auc     = best_wts_cb.best_auc
+        best_weights = best_wts_cb.best_weights
 
         # ── Phase 2: remaining epochs on train_audio + soundscape combined ───
         remaining = N_EPOCHS - plateau_cb.epochs_trained
         if plateau_cb.plateau_reached and soundscape_generator is not None and remaining > 0:
             print(f"  Phase 2: {remaining} epoch(s) on train_audio + soundscape combined...")
             combined_generator = CombinedGenerator(train_generator, soundscape_generator)
+            plateau_cb2  = PlateauCallback(patience=3, min_rel_delta=0.01)
+            best_wts_cb2 = _BestWeightsCallback()
             h2 = model.fit(
                 combined_generator, validation_data=val_generator,
-                epochs=remaining, verbose=1
+                epochs=remaining, verbose=1, callbacks=[plateau_cb2, best_wts_cb2]
             )
             history.history["val_auc"].extend(h2.history["val_auc"])
             history.history["val_loss"].extend(h2.history["val_loss"])
             history.history["loss"].extend(h2.history["loss"])
+            history.history["auc"].extend(h2.history.get("auc", []))
+            if best_wts_cb2.best_auc > best_auc:
+                best_auc     = best_wts_cb2.best_auc
+                best_weights = best_wts_cb2.best_weights
 
         elapsed        = round(time.time() - start)
         val_auc        = history.history["val_auc"][-1]
         val_loss       = history.history["val_loss"][-1]
         epochs_trained = len(history.history["val_auc"])
-        # if Phase 2 hurt val_auc vs Phase 1 best, restore best Phase 1 weights from memory
-        if val_auc < phase1_best_auc and best_wts_cb.best_weights is not None:
-            model.set_weights(best_wts_cb.best_weights)
-            val_auc  = phase1_best_auc
-            print(f"  Phase 2 degraded val_auc — restored best Phase 1 weights ({val_auc:.4f})")
+        # restore the best weights seen across both phases if the final epoch is worse
+        if val_auc < best_auc and best_weights is not None:
+            model.set_weights(best_weights)
+            val_auc = best_auc
+            print(f"  Restored best weights across phases ({val_auc:.4f})")
         print(f"  train_loss={history.history['loss'][-1]:.4f} | val_loss={val_loss:.4f} | val_auc={val_auc:.4f} | epochs={epochs_trained}")
 
         epoch_history = {
@@ -704,7 +710,14 @@ def run_agent(backbone_model, feature_dim, train_generator, val_generator, sound
     models_dir = BASE_PATH + "models/"
     os.makedirs(run_dir,    exist_ok=True)
     os.makedirs(models_dir, exist_ok=True)
-    best_auc = 0.0
+    best_auc = 0.0  # best within this run (controls the per-run folder copy)
+
+    # best val_auc ever recorded — protects models/ (the Kaggle copy) from being
+    # clobbered by a weaker run, since best_auc resets to 0 every run
+    prev = [e["val_auc"] for e in load_successful() if e.get("val_auc") is not None]
+    global_best_auc = max(prev) if prev else 0.0
+    print(f"Global best val_auc on record: {global_best_auc:.4f} "
+          f"(models/ only overwritten if a run beats this)")
 
     history = []  # grows each iteration — fed into the next prompt
 
@@ -725,7 +738,21 @@ def run_agent(backbone_model, feature_dim, train_generator, val_generator, sound
 
         # ── LLM proposes architecture ───────────────────────────────────────
         print("  Calling LLM...")
-        llm_response = call_llm(prompt)
+        try:
+            llm_response = call_llm(prompt)
+        except Exception as e:
+            print(f"  LLM unavailable after retries: {e} — skipping iteration {iteration}")
+            if not DEBUG:
+                add_experiment(
+                    run_id=run_id, iteration=iteration,
+                    label=f"{BACKBONE}_iter{iteration}", architecture="", code="",
+                    status="crashed", crash_count=0, error=f"LLM unavailable: {e}",
+                    val_auc=None, val_loss=None, epochs_trained=0,
+                    training_time_sec=None, llm_analysis="", epoch_history={},
+                    notes=f"backbone={BACKBONE}, fine_tune={FINE_TUNE}, epochs={N_EPOCHS}",
+                )
+            gc.collect()
+            continue
         code = extract_code(llm_response)
 
         # ── Train ───────────────────────────────────────────────────────────
@@ -738,7 +765,11 @@ def run_agent(backbone_model, feature_dim, train_generator, val_generator, sound
             crash_count += 1
             print(f"  CRASHED (attempt {crash_count}/{MAX_FIX_RETRIES}): {result['error']}")
             print(f"  Asking LLM to fix...")
-            fix_response = ask_llm_to_fix(code, result["error"], crash_count)
+            try:
+                fix_response = ask_llm_to_fix(code, result["error"], crash_count)
+            except Exception as e:
+                print(f"  Fix request failed ({e}) — keeping previous code")
+                fix_response = ""
             fixed_code = extract_code(fix_response)
             if fixed_code:
                 code = fixed_code
@@ -751,13 +782,17 @@ def run_agent(backbone_model, feature_dim, train_generator, val_generator, sound
             print(f"  SUCCESS after {crash_count} crash(es)")
             if result["val_auc"] > best_auc:
                 best_auc = result["val_auc"]
-                # save into run folder
+                # always save this run's best into its own folder
                 result["model"].save(run_dir + "best_model.keras")
                 result["model"].save_weights(run_dir + "best_model_weights.weights.h5")
-                # also keep a global copy for the Kaggle submission workflow
-                result["model"].save(models_dir + "best_model.keras")
-                result["model"].save_weights(models_dir + "best_model_weights.weights.h5")
-                print(f"  New best val_auc={best_auc:.4f} — saved to {run_dir}")
+                print(f"  New run-best val_auc={best_auc:.4f} — saved to {run_dir}")
+
+                # only overwrite the global Kaggle copy if it beats every prior run
+                if result["val_auc"] > global_best_auc:
+                    global_best_auc = result["val_auc"]
+                    result["model"].save(models_dir + "best_model.keras")
+                    result["model"].save_weights(models_dir + "best_model_weights.weights.h5")
+                    print(f"  New GLOBAL best — updated models/ ({global_best_auc:.4f})")
 
             print("  Asking LLM to analyse results...")
             llm_analysis = ask_llm_to_analyze(result, code, iteration, history)
