@@ -1,6 +1,10 @@
-tensorflow>=2.15.0
+# Pinned to match the Kaggle BirdCLEF 2026 environment exactly, so models
+# saved locally load on Kaggle without serialization version mismatches.
+tensorflow==2.19.0
+keras==3.10.0
 numpy
 pandas
 librosa
 scikit-learn
 ollama
+matplotlib
