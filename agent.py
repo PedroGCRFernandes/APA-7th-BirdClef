@@ -28,6 +28,32 @@ from sklearn.model_selection import train_test_split
 from experiment_log import new_run_id, add_experiment, print_summary, load_successful
 from prompt_builder import build_prompt
 
+# ── Version guard ──────────────────────────────────────────────────────────────
+# Kaggle's BirdCLEF 2026 image runs these EXACT versions. A newer local Keras
+# writes config keys (renorm, quantization_config, ...) that Kaggle's older Keras
+# cannot load, so a model trained on the wrong versions silently fails on Kaggle.
+KAGGLE_TF    = "2.19.0"
+KAGGLE_KERAS = "3.10.0"
+
+
+def _check_versions():
+    tf_v    = tf.__version__
+    keras_v = getattr(tf.keras, "__version__", "unknown")
+    if (tf_v, keras_v) != (KAGGLE_TF, KAGGLE_KERAS):
+        print("\n" + "!" * 72)
+        print("VERSION MISMATCH — models you train will NOT load on Kaggle.")
+        print(f"  yours : tensorflow {tf_v} / keras {keras_v}")
+        print(f"  Kaggle: tensorflow {KAGGLE_TF} / keras {KAGGLE_KERAS}")
+        print("  Fix:  pip install -r requirements.txt   (inside the keras_env)")
+        print("  Override (not recommended):  ALLOW_VERSION_MISMATCH=1 python agent.py")
+        print("!" * 72 + "\n")
+        if os.environ.get("ALLOW_VERSION_MISMATCH") != "1":
+            raise SystemExit("Aborting — wrong tensorflow/keras versions (see above).")
+        return False
+    print(f"Version check OK — tensorflow {tf_v} / keras {keras_v} (matches Kaggle)")
+    return True
+
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__)) + "/"
@@ -47,7 +73,7 @@ N_EPOCHS   = 15
 
 # Agent
 LLM_MODEL    = "gemma4:e4b"  #qwen3.5:9b
-N_ITERATIONS = 10
+N_ITERATIONS = 6
 MAX_FIX_RETRIES = 3  # how many times the LLM can try to fix a crash before giving up
 
 # Debug — set to True to use a tiny data slice for quick pipeline checks
@@ -879,6 +905,7 @@ def run_agent(backbone_model, feature_dim, train_generator, val_generator, sound
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _check_versions()
     df = load_data()
     num_classes, label_to_idx = load_taxonomy()
     train_df, val_df = make_splits(df)

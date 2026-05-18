@@ -17,15 +17,26 @@ Each iteration the agent runs this loop:
 
 ## Setup
 
+> ⚠️ **Versions are not optional.** The Kaggle BirdCLEF 2026 image runs
+> **TensorFlow 2.19.0 / Keras 3.10.0**. A newer Keras writes model-config keys
+> that Kaggle's older Keras cannot load, so a model trained on the wrong
+> versions *silently fails on Kaggle*. `requirements.txt` pins these exactly,
+> and `agent.py` refuses to run on a mismatch. Always install via
+> `pip install -r requirements.txt` — do not `pip install tensorflow` loose.
+
 ```bash
-# 1. Create conda environment
+# 1. Create conda environment (Python 3.12 — matches Kaggle)
 conda create -n keras_env python=3.12 -y
 conda activate keras_env
 
-# 2. Install dependencies
+# 2. Install pinned dependencies (TF 2.19.0 / Keras 3.10.0)
 pip install -r requirements.txt
 
-# 3. Install and start Ollama  (https://ollama.com)
+# 3. Verify versions match Kaggle
+python -c "import tensorflow as tf; print(tf.__version__, tf.keras.__version__)"
+#   expected:  2.19.0 3.10.0
+
+# 4. Install and start Ollama  (https://ollama.com)
 ollama pull gemma4:e4b
 ollama serve   # runs in background
 ```
