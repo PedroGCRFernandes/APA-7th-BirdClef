@@ -34,6 +34,8 @@ Your code runs in a namespace with exactly these variables pre-loaded:
 - `np`             — NumPy
 - Layer shortcuts (use these directly without tf.keras.layers prefix):
   Dense, Dropout, BatchNormalization, LayerNormalization, Activation
+  ReLU, LeakyReLU, PReLU, ELU   (use either: Dense(units, activation='gelu')(x)
+                                  or:  x = Dense(units)(x); x = LeakyReLU(0.1)(x))
   Conv1D, Conv2D, DepthwiseConv2D, SeparableConv2D
   MaxPooling1D, MaxPooling2D, AveragePooling1D, AveragePooling2D
   GlobalAveragePooling1D, GlobalAveragePooling2D, GlobalMaxPooling1D, GlobalMaxPooling2D
@@ -64,10 +66,12 @@ TECHNIQUES WORTH TRYING (pick one that hasn't been tried yet per the history bel
       fine_tune_layers = 20
       learning_rate    = 5e-5
 4. Vary the hidden activation — past runs only ever used 'relu' (or linear).
-   Deliberately try a different one and state which in your comment:
-      x = Dense(512, activation='gelu')(x)      # also: 'elu', 'swish', 'selu'
-      # or:  x = Dense(512)(x); x = tf.keras.layers.LeakyReLU(0.1)(x)
-   (The output layer must stay Dense(234, activation='sigmoid') — multi-label.)
+   You are free to use ANY Keras activation on the hidden layers (e.g.
+   gelu, elu, selu, swish/silu, mish, tanh, softplus, LeakyReLU, PReLU,
+   etc.) — pick one not used before and state which in your comment.
+   Only the final layer is fixed: Dense(234, activation='sigmoid'),
+   required because this is multi-label (independent per-species
+   probabilities) — do not use softmax there.
 
 RULES
 -----

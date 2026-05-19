@@ -583,6 +583,12 @@ def execute_safely(code, backbone_model, train_generator, val_generator, soundsc
             "BatchNormalization"   : tf.keras.layers.BatchNormalization,
             "LayerNormalization"   : tf.keras.layers.LayerNormalization,
             "Activation"           : tf.keras.layers.Activation,
+            # Parametric activations (string activations like 'relu','tanh','gelu',
+            # 'elu','selu','swish','softplus','sigmoid' already work as Dense kwargs)
+            "ReLU"                 : tf.keras.layers.ReLU,
+            "LeakyReLU"            : tf.keras.layers.LeakyReLU,
+            "PReLU"                : tf.keras.layers.PReLU,
+            "ELU"                  : tf.keras.layers.ELU,
             # Convolution
             "Conv1D"               : tf.keras.layers.Conv1D,
             "Conv2D"               : tf.keras.layers.Conv2D,
