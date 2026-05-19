@@ -64,7 +64,7 @@ DURATION    = 5
 
 # Mel-spectrogram
 
-N_MELS = 128 #64 - faster training, lower resolution; 128 - slower training, more detail
+N_MELS = 64 #64 - faster training, lower resolution; 128 - slower training, more detail
 F_MAX  = 16000
 
 # Training
