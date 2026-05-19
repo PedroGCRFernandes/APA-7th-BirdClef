@@ -63,6 +63,11 @@ TECHNIQUES WORTH TRYING (pick one that hasn't been tried yet per the history bel
 3. Backbone fine-tuning — unfreeze top layers for domain adaptation:
       fine_tune_layers = 20
       learning_rate    = 5e-5
+4. Vary the hidden activation — past runs only ever used 'relu' (or linear).
+   Deliberately try a different one and state which in your comment:
+      x = Dense(512, activation='gelu')(x)      # also: 'elu', 'swish', 'selu'
+      # or:  x = Dense(512)(x); x = tf.keras.layers.LeakyReLU(0.1)(x)
+   (The output layer must stay Dense(234, activation='sigmoid') — multi-label.)
 
 RULES
 -----
