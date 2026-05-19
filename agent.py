@@ -385,16 +385,26 @@ class _BestWeightsCallback(tf.keras.callbacks.Callback):
 
 
 class PlateauCallback(tf.keras.callbacks.Callback):
-    """Stops training after `patience` epochs without val_auc improving by
-    `min_rel_delta` *relative* to the current best (e.g. 0.01 = 1% relative gain).
-    Relative thresholds adapt as AUC rises: a 0.01 jump at 0.50 is easy, at 0.90 is not.
+    """Stops training when val_auc stops moving — in either direction —
+    relative to the *previous* epoch.
+
+    Bidirectional + absolute: an epoch counts as 'still moving' (and resets the
+    wait counter) if it changed by at least `min_delta` up OR down vs the
+    previous epoch. Only when the metric stays within +/- min_delta of the
+    previous epoch for `patience` epochs in a row do we declare a plateau.
+    This tolerates noisy val sets (e.g. soundscape-val) where the metric can
+    swing down then recover — that's still moving, not converged.
+
+    Note: best_auc here is informational; per-epoch best weights are tracked
+    separately by _BestWeightsCallback.
     """
 
-    def __init__(self, patience=4, min_rel_delta=0.01):
+    def __init__(self, patience=4, min_delta=0.005):
         super().__init__()
         self.patience        = patience
-        self.min_rel_delta   = min_rel_delta
+        self.min_delta       = min_delta
         self.best_auc        = 0.0
+        self.prev_auc        = None
         self.wait            = 0
         self.plateau_reached = False
         self.epochs_trained  = 0
@@ -402,18 +412,28 @@ class PlateauCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         self.epochs_trained = epoch + 1
         current = (logs or {}).get("val_auc", 0.0)
-        # relative improvement; first real value (best_auc==0) always counts
-        required = self.best_auc * self.min_rel_delta if self.best_auc > 0 else 0.0
-        if current - self.best_auc > required:
+
+        if current > self.best_auc:
             self.best_auc = current
+
+        if self.prev_auc is None:
+            # first epoch: nothing to compare against
+            self.prev_auc = current
+            return
+
+        moved = abs(current - self.prev_auc) >= self.min_delta
+        if moved:
             self.wait = 0
         else:
             self.wait += 1
-            print(f"    [plateau] val_auc stable for {self.wait}/{self.patience} epochs")
+            print(f"    [plateau] val_auc flat ({self.wait}/{self.patience}) "
+                  f"  |{current:.4f}-{self.prev_auc:.4f}|<{self.min_delta}")
             if self.wait >= self.patience:
                 self.plateau_reached = True
                 self.model.stop_training = True
                 print(f"    [plateau] val_auc plateaued — stopping after {self.epochs_trained} epochs")
+
+        self.prev_auc = current
 
 
 # ── Backbone ───────────────────────────────────────────────────────────────────
@@ -627,7 +647,7 @@ def execute_safely(code, backbone_model, train_generator, val_generator, soundsc
         #   (clips first, then clips+soundscapes after a plateau).
         # patience 5: soundscape-val is small/noisy, so tolerate more
         # epoch-to-epoch wobble before declaring a plateau
-        plateau_cb    = PlateauCallback(patience=5, min_rel_delta=0.005)
+        plateau_cb    = PlateauCallback(patience=5, min_delta=0.005)
         best_wts_cb   = _BestWeightsCallback()
         history = model.fit(
             train_generator, validation_data=val_generator,
@@ -643,7 +663,7 @@ def execute_safely(code, backbone_model, train_generator, val_generator, soundsc
         if plateau_cb.plateau_reached and soundscape_generator is not None and remaining > 0:
             print(f"  Phase 2: {remaining} epoch(s) on train_audio + soundscape combined...")
             combined_generator = CombinedGenerator(train_generator, soundscape_generator)
-            plateau_cb2  = PlateauCallback(patience=3, min_rel_delta=0.01)
+            plateau_cb2  = PlateauCallback(patience=3, min_delta=0.01)
             best_wts_cb2 = _BestWeightsCallback()
             h2 = model.fit(
                 combined_generator, validation_data=val_generator,
