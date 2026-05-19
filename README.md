@@ -41,6 +41,26 @@ ollama pull gemma4:e4b
 ollama serve   # runs in background
 ```
 
+### Optional: Apple Silicon GPU acceleration
+
+On an Apple Silicon Mac (M1/M2/M3) you can train on the GPU via Metal —
+much faster, and it does **not** affect Kaggle `.keras` compatibility
+(that depends on the Keras version, not the device).
+
+```bash
+# Uncomment the tensorflow-metal line in requirements.txt, then:
+pip install tensorflow-metal==1.2.0
+
+# Sanity-check it BEFORE a long run: set DEBUG=True in agent.py and run once.
+# Loss should decrease normally. If pip rejects the version, or you see
+# NaNs / garbage loss / unsupported-op errors, fall back:
+pip uninstall -y tensorflow-metal
+pip install tensorflow-metal          # let pip pick the build for TF 2.19
+#   then re-pin requirements.txt to whatever version it installed
+```
+
+Intel Macs: skip this entirely (Metal is Apple-Silicon only; CPU path works).
+
 ## Data layout
 
 Place the BirdCLEF 2026 competition files under `data/`:
