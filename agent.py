@@ -625,7 +625,9 @@ def execute_safely(code, backbone_model, train_generator, val_generator, soundsc
         #   train_generator already mixes clips + soundscapes, val = soundscapes.
         # SOUNDSCAPE_VAL=False → soundscape_generator is set: classic two-phase
         #   (clips first, then clips+soundscapes after a plateau).
-        plateau_cb    = PlateauCallback(patience=3, min_rel_delta=0.01)
+        # patience 5: soundscape-val is small/noisy, so tolerate more
+        # epoch-to-epoch wobble before declaring a plateau
+        plateau_cb    = PlateauCallback(patience=5, min_rel_delta=0.01)
         best_wts_cb   = _BestWeightsCallback()
         history = model.fit(
             train_generator, validation_data=val_generator,
