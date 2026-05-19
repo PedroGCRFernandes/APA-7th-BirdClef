@@ -72,12 +72,12 @@ BATCH_SIZE = 32
 N_EPOCHS   = 20
 
 # Agent
-LLM_MODEL    = "gemma4:e4b"  #qwen3.5:9b
+LLM_MODEL    = "gemma4:e4b"
 N_ITERATIONS = 8
 MAX_FIX_RETRIES = 3  # how many times the LLM can try to fix a crash before giving up
 
 # Debug — set to True to use a tiny data slice for quick pipeline checks
-DEBUG = False
+DEBUG = True
 DEBUG_SAMPLES = 64  # must be >= BATCH_SIZE
 
 # Validate on held-out soundscapes instead of clean clips, and mix soundscapes
@@ -86,6 +86,14 @@ DEBUG_SAMPLES = 64  # must be >= BATCH_SIZE
 # a smaller, noisier val set. Set False to restore clip-val + plateau Phase 2.
 SOUNDSCAPE_VAL     = True
 SOUNDSCAPE_VAL_FRAC = 0.2
+
+# Mixup augmentation: blend pairs of training samples (X and y) with a
+# Beta(alpha, alpha) coefficient. Synthesises multi-species overlap — the very
+# thing focal clips lack and soundscapes always have. Applied only to clip
+# batches (BirdDataGenerator with augment=True); soundscape batches and the
+# validation set are left clean.
+MIXUP_ALPHA = 0.4   # 0.2–0.4 typical for audio; lower = subtler mixes
+MIXUP_PROB  = 0.5   # fraction of training batches that get mixed
 
 # Backbone: "efficientnet"
 BACKBONE  = "efficientnet"
@@ -242,7 +250,18 @@ class BirdDataGenerator(tf.keras.utils.Sequence):
                 row["primary_label"], row["secondary_labels"],
                 self.label_to_idx, self.num_classes
             ))
-        return np.array(X)[..., np.newaxis], np.array(y)
+        X = np.array(X)[..., np.newaxis]
+        y = np.array(y)
+
+        # Mixup — only for training batches (augment=True); val stays clean.
+        # Soft labels in [0, 1] are fine for binary_crossentropy.
+        if self.augment and MIXUP_PROB > 0 and np.random.random() < MIXUP_PROB and len(X) > 1:
+            lam  = np.random.beta(MIXUP_ALPHA, MIXUP_ALPHA)
+            perm = np.random.permutation(len(X))
+            X    = lam * X + (1.0 - lam) * X[perm]
+            y    = lam * y + (1.0 - lam) * y[perm]
+
+        return X, y
 
     def _augment(self, audio):
         # Gaussian noise — simulates field recording conditions
