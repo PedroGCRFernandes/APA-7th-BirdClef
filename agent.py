@@ -413,7 +413,7 @@ class PlateauCallback(tf.keras.callbacks.Callback):
             if self.wait >= self.patience:
                 self.plateau_reached = True
                 self.model.stop_training = True
-                print("    [plateau] introducing soundscape data for remaining epochs")
+                print(f"    [plateau] val_auc plateaued — stopping after {self.epochs_trained} epochs")
 
 
 # ── Backbone ───────────────────────────────────────────────────────────────────
@@ -620,7 +620,11 @@ def execute_safely(code, backbone_model, train_generator, val_generator, soundsc
             metrics=[tf.keras.metrics.AUC(name="auc")],
         )
 
-        # ── Phase 1: train on labelled audio ───────────────────────────────
+        # ── Phase 1: main training ──────────────────────────────────────────
+        # SOUNDSCAPE_VAL=True  → soundscape_generator is None: single phase,
+        #   train_generator already mixes clips + soundscapes, val = soundscapes.
+        # SOUNDSCAPE_VAL=False → soundscape_generator is set: classic two-phase
+        #   (clips first, then clips+soundscapes after a plateau).
         plateau_cb    = PlateauCallback(patience=3, min_rel_delta=0.01)
         best_wts_cb   = _BestWeightsCallback()
         history = model.fit(
@@ -632,7 +636,7 @@ def execute_safely(code, backbone_model, train_generator, val_generator, soundsc
         best_auc     = best_wts_cb.best_auc
         best_weights = best_wts_cb.best_weights
 
-        # ── Phase 2: remaining epochs on train_audio + soundscape combined ───
+        # ── Phase 2 (only when SOUNDSCAPE_VAL=False): plateau-gated soundscapes ──
         remaining = N_EPOCHS - plateau_cb.epochs_trained
         if plateau_cb.plateau_reached and soundscape_generator is not None and remaining > 0:
             print(f"  Phase 2: {remaining} epoch(s) on train_audio + soundscape combined...")
@@ -655,11 +659,11 @@ def execute_safely(code, backbone_model, train_generator, val_generator, soundsc
         val_auc        = history.history["val_auc"][-1]
         val_loss       = history.history["val_loss"][-1]
         epochs_trained = len(history.history["val_auc"])
-        # restore the best weights seen across both phases if the final epoch is worse
+        # restore the best epoch's weights if the final epoch was worse
         if val_auc < best_auc and best_weights is not None:
             model.set_weights(best_weights)
             val_auc = best_auc
-            print(f"  Restored best weights across phases ({val_auc:.4f})")
+            print(f"  Restored best-epoch weights ({val_auc:.4f})")
         print(f"  train_loss={history.history['loss'][-1]:.4f} | val_loss={val_loss:.4f} | val_auc={val_auc:.4f} | epochs={epochs_trained}")
 
         epoch_history = {
