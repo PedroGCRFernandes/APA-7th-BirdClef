@@ -64,21 +64,28 @@ DURATION    = 5
 
 # Mel-spectrogram
 
-N_MELS = 64 #64 - faster training, lower resolution; 128 - slower training, more detail
+N_MELS = 128 #64 - faster training, lower resolution; 128 - slower training, more detail
 F_MAX  = 16000
 
 # Training
 BATCH_SIZE = 32
-N_EPOCHS   = 15
+N_EPOCHS   = 20
 
 # Agent
 LLM_MODEL    = "gemma4:e4b"  #qwen3.5:9b
-N_ITERATIONS = 6
+N_ITERATIONS = 8
 MAX_FIX_RETRIES = 3  # how many times the LLM can try to fix a crash before giving up
 
 # Debug — set to True to use a tiny data slice for quick pipeline checks
 DEBUG = False
 DEBUG_SAMPLES = 64  # must be >= BATCH_SIZE
+
+# Validate on held-out soundscapes instead of clean clips, and mix soundscapes
+# into training from epoch 1. Aligns val_auc / early-stopping / best-model
+# selection with the real Kaggle objective (noisy soundscapes), at the cost of
+# a smaller, noisier val set. Set False to restore clip-val + plateau Phase 2.
+SOUNDSCAPE_VAL     = True
+SOUNDSCAPE_VAL_FRAC = 0.2
 
 # Backbone: "efficientnet"
 BACKBONE  = "efficientnet"
@@ -411,7 +418,9 @@ class PlateauCallback(tf.keras.callbacks.Callback):
 
 # ── Backbone ───────────────────────────────────────────────────────────────────
 
-def build_backbone(name, input_shape=(64, 313, 1)):
+def build_backbone(name, input_shape=None):
+    if input_shape is None:
+        input_shape = (N_MELS, 313, 1)  # freq dim must track N_MELS
     inputs = tf.keras.Input(shape=input_shape)
     x = tf.keras.layers.Concatenate(axis=-1)([inputs, inputs, inputs])
 
@@ -788,7 +797,7 @@ def run_agent(backbone_model, feature_dim, train_generator, val_generator, sound
 
         # ── Build prompt with accumulated history ───────────────────────────
         _fdim = int(backbone_model.output_shape[-1]) if backbone_model is not None else feature_dim
-        prompt = build_prompt(_fdim, backbone_name=BACKBONE_CLASS_NAME[BACKBONE], history=history)
+        prompt = build_prompt(_fdim, backbone_name=BACKBONE_CLASS_NAME[BACKBONE], history=history, n_mels=N_MELS)
 
         if history:
             best = max((e for e in history if e["val_auc"] is not None), key=lambda e: e["val_auc"], default=None)
@@ -920,27 +929,60 @@ if __name__ == "__main__":
         train_df = oversample_rare(train_df, min_count=50)
 
     soundscape_df = load_soundscape_data(label_to_idx, num_classes)
+    if DEBUG and soundscape_df is not None:
+        # keep enough that the 80/20 split still yields >= 1 batch each side
+        soundscape_df = soundscape_df.iloc[:DEBUG_SAMPLES * 4].reset_index(drop=True)
 
     spec_cache = {}
     if not DEBUG:
         all_df = pd.concat([train_df, val_df], ignore_index=True)
         spec_cache = precompute_spectrograms(all_df, soundscape_df)
 
-    train_generator = BirdDataGenerator(
+    # Decide whether the soundscape-validation regime is usable: need enough
+    # soundscape windows to carve a meaningful held-out val split.
+    use_ss_val = (
+        SOUNDSCAPE_VAL
+        and soundscape_df is not None
+        # both splits must hold at least one batch
+        and len(soundscape_df) * SOUNDSCAPE_VAL_FRAC >= BATCH_SIZE
+        and len(soundscape_df) * (1 - SOUNDSCAPE_VAL_FRAC) >= BATCH_SIZE
+    )
+
+    clip_train_gen = BirdDataGenerator(
         train_df, label_to_idx, num_classes, augment=True, shuffle=True, cache=spec_cache
     )
-    val_generator = BirdDataGenerator(
-        val_df, label_to_idx, num_classes, augment=False, shuffle=False, cache=spec_cache
-    )
+
+    if use_ss_val:
+        # Split soundscapes into train/val; train on clips + soundscape-train
+        # from epoch 1, validate on the held-out soundscape-val (the real
+        # objective). Phase 2 is disabled (soundscape_generator=None) because
+        # soundscapes are already mixed into training throughout.
+        ss_train_df, ss_val_df = train_test_split(
+            soundscape_df, test_size=SOUNDSCAPE_VAL_FRAC, random_state=42
+        )
+        ss_train_gen    = SoundscapeGenerator(ss_train_df, shuffle=True,  cache=spec_cache)
+        train_generator = CombinedGenerator(clip_train_gen, ss_train_gen)
+        val_generator   = SoundscapeGenerator(ss_val_df, shuffle=False, cache=spec_cache)
+        soundscape_generator = None
+        print(f"SOUNDSCAPE_VAL on — soundscape train/val: "
+              f"{len(ss_train_df)}/{len(ss_val_df)} windows")
+        print(f"Train batches/epoch: {len(train_generator)} "
+              f"(clips {len(clip_train_gen)} + soundscape {len(ss_train_gen)})")
+        print(f"Val (soundscape) batches/epoch: {len(val_generator)}")
+    else:
+        # Original regime: clip-val + plateau-gated Phase 2 on soundscapes.
+        train_generator = clip_train_gen
+        val_generator = BirdDataGenerator(
+            val_df, label_to_idx, num_classes, augment=False, shuffle=False, cache=spec_cache
+        )
+        soundscape_generator = None
+        if soundscape_df is not None and len(soundscape_df) >= BATCH_SIZE:
+            soundscape_generator = SoundscapeGenerator(soundscape_df, shuffle=True, cache=spec_cache)
+            print(f"Soundscape batches/epoch: {len(soundscape_generator)}")
+        print(f"Train samples: {len(train_df)} | batches/epoch: {len(train_generator)}")
+        print(f"Val   samples: {len(val_df)}   | batches/epoch: {len(val_generator)}")
 
     X_batch, y_batch = train_generator[0]
     print(f"Sanity check — X: {X_batch.shape} | y: {y_batch.shape}")
-    print(f"Train samples: {len(train_df)} | batches/epoch: {len(train_generator)}")
-    print(f"Val   samples: {len(val_df)}   | batches/epoch: {len(val_generator)}")
-
-    soundscape_generator = None
-    if soundscape_df is not None and len(soundscape_df) >= BATCH_SIZE:
-        soundscape_generator = SoundscapeGenerator(soundscape_df, shuffle=True, cache=spec_cache)
-        print(f"Soundscape batches/epoch: {len(soundscape_generator)}")
 
     run_agent(backbone_model, feature_dim, train_generator, val_generator, soundscape_generator)

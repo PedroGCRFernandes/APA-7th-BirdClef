@@ -1,10 +1,12 @@
-def build_prompt(feature_dim=1280, backbone_name="EfficientNetB0", history=None):
+def build_prompt(feature_dim=1280, backbone_name="EfficientNetB0", history=None, n_mels=64):
     """
     history: list of dicts from experiment_log, most recent last.
              Each dict has: label, val_auc, val_loss, status, error, architecture, notes
+    n_mels: spectrogram frequency bins (agent.py N_MELS) — sets the input shape.
     """
 
     history_section = _format_history(history)
+    input_shape = f"({n_mels}, 313, 1)"
 
     return f"""You are an ML researcher designing model heads for a bird species audio classifier.
 
@@ -13,12 +15,12 @@ TASK
 Write a Keras model head for multi-label classification of 234 bird species from audio spectrograms.
 
 A pretrained {backbone_name} backbone is already loaded as `backbone_model`.
-- Input shape : (64, 313, 1)  — mel-spectrogram (frequency x time x channel)
+- Input shape : {input_shape}  — mel-spectrogram (frequency x time x channel)
 - Output shape: ({feature_dim},)  — flat feature vector
 
 A minimal starting pattern — you are free to design the head however you like (branches, skip connections, attention, Conv1D over features, etc.), as long as you call `backbone_model` and assign the final model to `model`:
 
-    inputs  = tf.keras.Input(shape=(64, 313, 1))
+    inputs  = tf.keras.Input(shape={input_shape})
     x       = backbone_model(inputs, training=False)  # fixed — do not modify backbone_model
     # your head design here
     outputs = Dense(234, activation='sigmoid')(x)
