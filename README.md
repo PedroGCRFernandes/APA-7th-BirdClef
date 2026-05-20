@@ -2,6 +2,29 @@
 
 An autonomous AI research agent that iteratively designs, trains, evaluates, and improves deep learning models for bird species audio classification (BirdCLEF 2026, Track B).
 
+The project trains **two backbones**: EfficientNet (repo root) and YamNet (`Yamnet runs/`).
+
+## Run everything with one command
+
+```bash
+conda activate keras_env     # the environment you trained in
+./run.sh
+```
+
+`run.sh` does the full pipeline end-to-end:
+
+1. Installs the pinned dependencies (`requirements.txt`) and verifies TF 2.19.0 / Keras 3.10.0
+2. Starts Ollama and pulls the LLM (`gemma4:e4b`)
+3. Links the shared `data/` into `Yamnet runs/` (the YamNet agent reads data relative to its own folder)
+4. Runs the **EfficientNet** agent, then the **YamNet** agent — full research runs
+
+> ⏱️ This is the full run (`DEBUG=False`): expect **several hours per backbone** on CPU.
+> Output streams to the console and is saved per run under `logs/`. If one agent
+> errors, the script logs it and still runs the other.
+>
+> 📦 The YamNet backbone is bundled offline at `Yamnet runs/models/yamnet_savedmodel/`,
+> so no download is needed at run time.
+
 ## How it works
 
 Each iteration the agent runs this loop:

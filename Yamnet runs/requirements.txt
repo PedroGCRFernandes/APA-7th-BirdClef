@@ -1,0 +1,19 @@
+# Pinned to match the Kaggle BirdCLEF 2026 environment exactly, so models
+# saved locally load on Kaggle without serialization version mismatches.
+tensorflow==2.19.0
+keras==3.10.0
+
+# Optional: Apple Silicon (M1/M2/M3) GPU acceleration via Metal.
+# Uncomment ONLY on an Apple Silicon Mac. Speeds up training a lot;
+# does NOT affect saved-model Kaggle compatibility (that's Keras-version,
+# not device, dependent). Must be the build matching tensorflow 2.19 —
+# if `pip install tensorflow-metal` pulls an incompatible version, pin it.
+# Do a quick DEBUG=True run first to confirm Metal ops behave.
+# tensorflow-metal==1.2.0
+
+numpy
+pandas
+librosa
+scikit-learn
+ollama
+matplotlib

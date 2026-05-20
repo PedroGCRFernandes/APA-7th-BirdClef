@@ -1,14 +1,31 @@
-# Audio data — too large for GitHub (use Kaggle datasets instead)
-data/train_audio/
-data/train_soundscapes/
-data/test_soundscapes/
+# Competition data — obtain from Kaggle, never committed
+# (audio is huge; CSVs/taxonomy come with the competition download).
+data/
 
 # Trained model files — hosted on Kaggle dataset
 models/
 runs/
+
+# Exception: keep the bundled YamNet backbone so a fresh clone runs offline.
+# (Re-include the folder first, re-ignore its contents, then track only the
+#  SavedModel — generated best_model* in that folder stay ignored.)
+!Yamnet runs/models/
+Yamnet runs/models/*
+!Yamnet runs/models/yamnet_savedmodel/
 
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+
+# Per-run console logs written by run.sh
+logs/
+
+# Symlink run.sh creates so the YamNet agent finds the shared dataset
+Yamnet runs/data
+
+# Report artifacts & course materials — not part of the codebase
+figures/
+APPROACH.*
+Project_Handout*

@@ -77,7 +77,7 @@ N_ITERATIONS = 8
 MAX_FIX_RETRIES = 3  # how many times the LLM can try to fix a crash before giving up
 
 # Debug — set to True to use a tiny data slice for quick pipeline checks
-DEBUG = True
+DEBUG = False
 DEBUG_SAMPLES = 64  # must be >= BATCH_SIZE
 
 # Validate on held-out soundscapes instead of clean clips, and mix soundscapes
