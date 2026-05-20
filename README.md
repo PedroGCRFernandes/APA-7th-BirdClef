@@ -1,139 +1,188 @@
 # BirdCLEF 2026 — Autonomous Research Agent
 
-An autonomous AI research agent that iteratively designs, trains, evaluates, and improves deep learning models for bird species audio classification (BirdCLEF 2026, Track B).
+An autonomous research agent that uses a **locally-hosted LLM** (via Ollama) to
+iteratively design, train, and evaluate deep-learning model heads for the
+**BirdCLEF 2026** audio classification task: multi-label recognition of **234
+species** (birds, amphibians, insects, mammals, reptiles) in 5-second soundscape
+windows from the Pantanal wetlands, scored by **macro-averaged ROC-AUC**.
 
-The project trains **two backbones**: EfficientNet (repo root) and YamNet (`Yamnet runs/`).
+Instead of hand-tuning a single network, the agent runs a closed loop —
+*propose → train → evaluate → reflect → repeat* — on top of a **frozen pretrained
+backbone**, accumulating an experiment log that conditions each next proposal.
 
-## Run everything with one command
+## What we did
+
+- **Two backbones, same agent.** We ran the loop on two frozen feature
+  extractors and compared them:
+  - **EfficientNetB0** (ImageNet) over **mel-spectrograms** — repo root.
+  - **YAMNet** (Google AudioSet) over **raw waveforms** → 1024-d embeddings —
+    `Yamnet runs/`. YAMNet is bundled offline so it needs no download at run time.
+- **LLM-designed heads.** Each iteration the LLM writes only the classifier head
+  (the backbone is fixed); the agent validates the code, trains it, scores it,
+  and feeds the result back into the next prompt.
+- **Techniques explored across iterations:** focal loss for class imbalance,
+  squeeze-and-excitation attention, backbone fine-tuning, varied hidden
+  activations, **mixup** (EfficientNet) and **waveform augmentation +
+  embedding masking** (YAMNet).
+- **Validation that tracks the leaderboard.** A **soundscape-validation regime**
+  (validate on held-out soundscapes, the scored distribution) was added to
+  reduce the gap between offline scores and the Kaggle leaderboard.
+- **Kaggle-compatibility hardening.** The whole stack is pinned to Kaggle's exact
+  **TensorFlow 2.19.0 / Keras 3.10.0** so locally-trained `.keras` models load on
+  Kaggle without serialization-version errors; `agent.py` refuses to run on a mismatch.
+- **Reproducible delivery.** A single `run.sh` sets up the environment and runs
+  both backbones end-to-end; `eda.ipynb` and `results.ipynb` document the data
+  and the results.
+
+## Results (public leaderboard, macro ROC-AUC)
+
+| Submission | Backbone | Public LB |
+|---|---|---|
+| Zero-filled baseline | — | 0.512 |
+| First head | EfficientNet | 0.632 |
+| Soundscape-validation | EfficientNet | 0.711 |
+| Augmentation (mixup) | EfficientNet | 0.715 |
+| Augmentation | YAMNet | 0.733 |
+| **First head** | **YAMNet** | **0.745** |
+
+Best offline validation reached **~0.93** macro-AUC, well above the leaderboard —
+the gap is the **domain shift** between clean focal training clips and noisy,
+multi-species Pantanal soundscapes (see *Limitations*).
+
+## Quick start — one command
 
 ```bash
 conda activate keras_env     # the environment you trained in
 ./run.sh
 ```
 
-`run.sh` does the full pipeline end-to-end:
+`run.sh` runs the full pipeline:
 
-1. Installs the pinned dependencies (`requirements.txt`) and verifies TF 2.19.0 / Keras 3.10.0
+1. Installs pinned dependencies (`requirements.txt`) and verifies TF 2.19.0 / Keras 3.10.0
 2. Starts Ollama and pulls the LLM (`gemma4:e4b`)
-3. Links the shared `data/` into `Yamnet runs/` (the YamNet agent reads data relative to its own folder)
-4. Runs the **EfficientNet** agent, then the **YamNet** agent — full research runs
+3. Links the shared `data/` into `Yamnet runs/` (the YAMNet agent reads data relative to its own folder)
+4. Runs the **EfficientNet** agent, then the **YAMNet** agent
 
-> ⏱️ This is the full run (`DEBUG=False`): expect **several hours per backbone** on CPU.
-> Output streams to the console and is saved per run under `logs/`. If one agent
-> errors, the script logs it and still runs the other.
->
-> 📦 The YamNet backbone is bundled offline at `Yamnet runs/models/yamnet_savedmodel/`,
-> so no download is needed at run time.
+> ⏱️ This is the full run (`DEBUG=False`): expect **several hours per backbone** on
+> CPU. Output streams to the console and to `logs/`. If one agent errors, the
+> script logs it and still runs the other.
 
-## How it works
+## How the agent loop works
 
-Each iteration the agent runs this loop:
+Each iteration:
 
-1. **Prompt** — Sends the LLM (Ollama `gemma4:e4b`) a description of the backbone and all past experiment results
-2. **Generate** — LLM writes a Keras model head (Dense layers only; backbone is fixed)
-3. **Validate** — Basic checks before execution: uses `backbone_model`, no class definitions, no forbidden calls
-4. **Train** — Phase 1 on `train_audio`; Phase 2 on soundscape windows if val_auc plateaus
-5. **Analyse** — LLM reflects on the result and explains what to try next
-6. **Log** — Result appended to `experiments.jsonl` (never overwritten)
-7. **Save** — Best model by val_auc saved to `models/best_model.keras`
-8. **Repeat** — History fed back into the next prompt
+1. **Prompt** — the LLM receives the backbone description and all past results
+2. **Generate** — the LLM writes a Keras head (the backbone stays frozen)
+3. **Validate** — static checks before execution (uses `backbone_model`, no forbidden calls)
+4. **Train & evaluate** — fit the head, measure validation macro ROC-AUC
+5. **Reflect** — the LLM analyses the result and proposes what to try next
+6. **Log** — appended to `experiments.jsonl` (append-only)
+7. **Save** — the best model by validation AUC is written to `models/best_model.keras`
 
-## Setup
+Two training regimes are available via the `SOUNDSCAPE_VAL` toggle: validate on
+held-out soundscapes (default for EfficientNet), or clip-validation with a
+plateau-gated soundscape phase (default for YAMNet).
 
-> ⚠️ **Versions are not optional.** The Kaggle BirdCLEF 2026 image runs
+## The two backbones
+
+| | EfficientNet (root) | YAMNet (`Yamnet runs/`) |
+|---|---|---|
+| Pretraining | ImageNet | AudioSet (bioacoustic) |
+| Input | mel-spectrogram, 32 kHz, 64 mel bins, 5 s | raw waveform, 16 kHz → 1024-d embedding |
+| Iterations × epochs | 8 × 20 | 20 × 40 |
+| Augmentation | mixup (α=0.4, p=0.5) | waveform variants (×6) + embedding masking |
+| `SOUNDSCAPE_VAL` | `True` | `False` |
+| Batch size / LLM | 32 / `gemma4:e4b` | 32 / `gemma4:e4b` |
+
+## Setup (manual)
+
+> ⚠️ **Versions are not optional.** Kaggle's BirdCLEF 2026 image runs
 > **TensorFlow 2.19.0 / Keras 3.10.0**. A newer Keras writes model-config keys
-> that Kaggle's older Keras cannot load, so a model trained on the wrong
-> versions *silently fails on Kaggle*. `requirements.txt` pins these exactly,
-> and `agent.py` refuses to run on a mismatch. Always install via
-> `pip install -r requirements.txt` — do not `pip install tensorflow` loose.
+> Kaggle's older Keras cannot load, so a model trained on the wrong versions
+> *silently fails on Kaggle*. Always install via `requirements.txt`.
 
 ```bash
-# 1. Create conda environment (Python 3.12 — matches Kaggle)
+# 1. Conda environment (Python 3.12 — matches Kaggle)
 conda create -n keras_env python=3.12 -y
 conda activate keras_env
 
-# 2. Install pinned dependencies (TF 2.19.0 / Keras 3.10.0)
+# 2. Pinned dependencies (TF 2.19.0 / Keras 3.10.0)
 pip install -r requirements.txt
 
-# 3. Verify versions match Kaggle
-python -c "import tensorflow as tf; print(tf.__version__, tf.keras.__version__)"
-#   expected:  2.19.0 3.10.0
+# 3. Verify versions match Kaggle  → expected: 2.19.0 3.10.0
+python -c "import tensorflow as tf, keras; print(tf.__version__, keras.__version__)"
 
-# 4. Install and start Ollama  (https://ollama.com)
+# 4. Local LLM
 ollama pull gemma4:e4b
-ollama serve   # runs in background
+ollama serve   # background
 ```
 
-### Optional: Apple Silicon GPU acceleration
+### Optional: Apple Silicon GPU
 
-On an Apple Silicon Mac (M1/M2/M3) you can train on the GPU via Metal —
-much faster, and it does **not** affect Kaggle `.keras` compatibility
-(that depends on the Keras version, not the device).
+On an Apple-Silicon Mac, Metal can speed up training and does **not** affect
+Kaggle `.keras` compatibility (that depends on the Keras version, not the device).
+GPU is **off by default**; uncomment `tensorflow-metal` in `requirements.txt`,
+install it, and sanity-check with a `DEBUG=True` run before a long run.
 
-```bash
-# Uncomment the tensorflow-metal line in requirements.txt, then:
-pip install tensorflow-metal==1.2.0
+## Data
 
-# Sanity-check it BEFORE a long run: set DEBUG=True in agent.py and run once.
-# Loss should decrease normally. If pip rejects the version, or you see
-# NaNs / garbage loss / unsupported-op errors, fall back:
-pip uninstall -y tensorflow-metal
-pip install tensorflow-metal          # let pip pick the build for TF 2.19
-#   then re-pin requirements.txt to whatever version it installed
-```
-
-Intel Macs: skip this entirely (Metal is Apple-Silicon only; CPU path works).
-
-## Data layout
-
-Place the BirdCLEF 2026 competition files under `data/`:
+The competition data is **not committed** (it is large and provided by Kaggle).
+Download it from the BirdCLEF 2026 competition into `data/`:
 
 ```
 data/
   train.csv
   taxonomy.csv
-  train_audio/          # individual recordings (.ogg)
-  train_soundscapes/    # soundscape recordings (.ogg)
   train_soundscapes_labels.csv
+  train_audio/          # focal recordings (.ogg)
+  train_soundscapes/    # soundscape recordings (.ogg)
 ```
 
-## Running the agent
-
-```bash
-conda activate keras_env
-python agent.py
-```
-
-Key config knobs at the top of `agent.py`:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `N_ITERATIONS` | 5 | Number of LLM-propose-train cycles |
-| `N_EPOCHS` | 5 | Max epochs per iteration |
-| `BACKBONE` | `"efficientnet"` | Pretrained feature extractor |
-| `FINE_TUNE` | `True` | Unfreeze backbone weights |
-| `DEBUG` | `False` | Use 64 samples for fast pipeline checks |
-
-## Viewing results
-
-```python
-from experiment_log import print_summary
-print_summary()
-```
+The agents read these paths directly; `eda.ipynb` analyses them.
 
 ## Kaggle submission
 
-1. After training, upload `models/best_model.keras` to Kaggle as a dataset named `birdclef-model`
-2. Open `submission.ipynb` in Kaggle, add your dataset via **Add Data → Your Datasets**
-3. Run all cells — outputs `submission.csv`
+1. Upload the chosen `best_model.keras` to Kaggle as a dataset named `birdclef-model`
+2. Open `submission.ipynb`, attach the dataset via **Add Data → Your Datasets**
+3. Run all cells → `submission.csv` (the notebook auto-discovers the model and smoke-tests it)
 
-## Files
+## Repository layout
 
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
-| `agent.py` | Main agent loop |
-| `prompt_builder.py` | Builds LLM prompts with experiment history |
+| `run.sh` | One-command setup + full run of both backbones |
+| `agent.py` | EfficientNet agent loop |
+| `Yamnet runs/agent.py` | YAMNet agent loop (bundled offline SavedModel) |
+| `prompt_builder.py` | Builds LLM prompts from experiment history |
 | `experiment_log.py` | Append-only JSONL experiment logger |
-| `submission.ipynb` | Kaggle inference notebook |
 | `experiments.jsonl` | All experiment results (auto-generated) |
-| `models/best_model.keras` | Best model weights (auto-generated) |
+| `eda.ipynb` | Exploratory data analysis |
+| `results.ipynb` | Leaderboard, backbone comparison, training curves, crash analysis |
+| `submission.ipynb` | Kaggle inference notebook |
+
+## Limitations & what's missing
+
+- **Domain-shift gap.** Offline validation (~0.93) is far above the public
+  leaderboard (0.71–0.745). The soundscape-validation regime narrows the gap but
+  does not close it; clean focal clips remain a poor proxy for noisy multi-species
+  soundscapes.
+- **YAMNet × soundscape-validation never worked.** That combination consistently
+  errored and produced no valid submission, so YAMNet runs with `SOUNDSCAPE_VAL=False`.
+- **Incomplete YAMNet logs.** `Yamnet runs/experiments.jsonl` was reset, so the
+  per-epoch history of the best YAMNet runs is no longer available — only the
+  training-curve images saved at run time survive (used in `results.ipynb`).
+- **Two partially-duplicated codebases.** EfficientNet and YAMNet have separate
+  `agent.py` / `prompt_builder.py` / `experiment_log.py` rather than one
+  parameterised pipeline.
+- **No ensembling.** The two backbones are submitted independently; blending them
+  (a likely score gain) has not been done.
+- **CPU-bound, long runs.** A full run takes hours per backbone; GPU acceleration
+  is optional and off by default.
+- **Rare-species tail.** Macro-AUC weights all 234 species equally, but many have
+  very few training clips — the long tail is under-served (quantified in `eda.ipynb`).
+
+## Future work
+
+Unify the two backbones into one configurable pipeline; ensemble EfficientNet and
+YAMNet; per-species threshold/temperature calibration on held-out soundscapes; and
+broader test-time augmentation aimed squarely at the domain shift.
