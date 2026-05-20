@@ -49,6 +49,10 @@ Best offline validation reached **~0.93** macro-AUC, well above the leaderboard 
 the gap is the **domain shift** between clean focal training clips and noisy,
 multi-species Pantanal soundscapes (see *Limitations*).
 
+## Video Overview
+
+[![Watch the demo](https://img.youtube.com/vi/O_03TRQfUfo/maxresdefault.jpg)](https://youtu.be/O_03TRQfUfo)
+
 ## Quick start — one command
 
 ```bash
